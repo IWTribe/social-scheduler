@@ -2,7 +2,7 @@ name: Post due videos
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # every 10 minutes (GitHub may delay a few minutes)
+    - cron: "3,23,43 * * * *"   # GitHub cron is best-effort; the --wait-ahead window below covers its lag
   workflow_dispatch:
     inputs:
       row:
@@ -17,7 +17,7 @@ concurrency:
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,7 +33,9 @@ jobs:
           if [ -n "${{ github.event.inputs.row }}" ]; then
             python3 social_scheduler.py --config config.json --row "${{ github.event.inputs.row }}"
           else
-            python3 social_scheduler.py --config config.json
+            # If nothing is due yet but a row is due within 5 hours, this run stays alive and
+            # posts it at the exact minute, so a late/missed cron slot cannot delay the post.
+            python3 social_scheduler.py --config config.json --wait-ahead 300
           fi
       - name: Keep repo active (scheduled workflows pause after 60 idle days)
         if: always()
