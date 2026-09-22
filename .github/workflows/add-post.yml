@@ -26,6 +26,10 @@ on:
         required: false
         default: "all"
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   add:
     runs-on: ubuntu-latest
@@ -52,3 +56,7 @@ jobs:
           python3 social_scheduler.py --config config.json --add \
             --time "$T" --video "$V" --title "$TI" --caption "$C" --hashtags "$H" --platforms "$P"
           python3 social_scheduler.py --config config.json --list
+      - name: Start a poster run now (it waits for the new row if it is due within 5 hours)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run post.yml --ref main -f row=""
