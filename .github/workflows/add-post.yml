@@ -1,0 +1,54 @@
+name: Add a post to the queue
+
+on:
+  workflow_dispatch:
+    inputs:
+      time:
+        description: "Post time, Europe/Budapest, e.g. 2026-09-25 18:00"
+        required: true
+      video:
+        description: "File name in the Drive Videos folder (or a Drive link)"
+        required: true
+      title:
+        description: "YouTube title (max 100 chars). Empty = first line of caption"
+        required: false
+        default: ""
+      caption:
+        description: "Caption for Instagram/Facebook and YouTube description"
+        required: false
+        default: ""
+      hashtags:
+        description: "e.g. #deadlift #strength"
+        required: false
+        default: ""
+      platforms:
+        description: "all, or any of: youtube, instagram, facebook"
+        required: false
+        default: "all"
+
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests
+      - name: Write config
+        run: printf '%s' "$CONFIG_JSON" > config.json
+        env:
+          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+      - name: Append row
+        env:
+          T: ${{ github.event.inputs.time }}
+          V: ${{ github.event.inputs.video }}
+          TI: ${{ github.event.inputs.title }}
+          C: ${{ github.event.inputs.caption }}
+          H: ${{ github.event.inputs.hashtags }}
+          P: ${{ github.event.inputs.platforms }}
+        run: |
+          python3 social_scheduler.py --config config.json --add \
+            --time "$T" --video "$V" --title "$TI" --caption "$C" --hashtags "$H" --platforms "$P"
+          python3 social_scheduler.py --config config.json --list
