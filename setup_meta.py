@@ -97,13 +97,13 @@ def main():
     user_token = ll["access_token"]
     print("approved. long-lived user token obtained")
 
-    pages = get(f"{G}/me/accounts", fields="id,name,access_token,instagram_business_account{id,username}",
+    pages = get(f"{G}/me/accounts", fields="id,name,access_token,instagram_business_account{id,username},connected_instagram_account{id,username}",
                 access_token=user_token, limit=100).get("data", [])
     if not pages:
         sys.exit("No Facebook Pages came back. Did you tick the Page in the permission dialog?")
     print("Pages granted:")
     for p in pages:
-        ig = p.get("instagram_business_account", {})
+        ig = p.get("instagram_business_account") or p.get("connected_instagram_account") or {}
         print(f"  - {p['name']}  (page id {p['id']})  IG: {ig.get('username', '— not linked')}")
 
     page = next((p for p in pages if p["id"] == a.page_id), None) if a.page_id else pages[0]
@@ -112,7 +112,7 @@ def main():
     if len(pages) > 1 and not a.page_id:
         print(f"\nUsing the first page ({page['name']}). Re-run with --page-id to choose another.")
 
-    ig = page.get("instagram_business_account", {})
+    ig = page.get("instagram_business_account") or page.get("connected_instagram_account") or {}
     if not ig:
         print("\nWARNING: no Instagram professional account is linked to this Page - Instagram posting "
               "will fail until you link one (Page settings > Linked accounts).")
