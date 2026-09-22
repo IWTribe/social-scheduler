@@ -494,6 +494,8 @@ def main():
     ap.add_argument("--time"); ap.add_argument("--video"); ap.add_argument("--title", default="")
     ap.add_argument("--caption", default=""); ap.add_argument("--hashtags", default="")
     ap.add_argument("--platforms", default="all")
+    ap.add_argument("--wait-ahead", type=int, default=0, metavar="MIN",
+                    help="if nothing is due but a row is due within MIN minutes, stay running and post it on time")
     a = ap.parse_args()
 
     cfg = load_config(a.config)
@@ -519,23 +521,58 @@ def main():
             print(f"row {r['_row']:>3}  {str(r['post_time']):<17} {r['status'] or 'queued':<13} "
                   f"{r['video'][:40]:<40} {r['platforms'] or 'all'}")
         return
-    todo = due_rows(rows, tz, now, cfg["max_late_hours"], a.row, a.force)
-    log(f"{len(rows)} rows in queue, {len(todo)} to handle (now {now:%Y-%m-%d %H:%M %Z})")
+    summary = []
+    while True:
+        todo = due_rows(rows, tz, now, cfg["max_late_hours"], a.row, a.force)
+        log(f"{len(rows)} rows in queue, {len(todo)} to handle (now {now:%Y-%m-%d %H:%M %Z})")
+        summary += handle_rows(g, meta, cfg, todo, a.dry_run)
+        if a.row or a.dry_run or a.wait_ahead <= 0:
+            break
+        # GitHub's cron is best-effort and can skip a slot by an hour or more. If the next queued
+        # row is due within --wait-ahead minutes, stay alive and post it at the exact minute
+        # instead of trusting the next scheduled run to show up on time.
+        nxt = next_due(rows, tz, now)
+        if not nxt or nxt - now > timedelta(minutes=a.wait_ahead):
+            break
+        log(f"next post due {nxt:%Y-%m-%d %H:%M %Z}; waiting {int((nxt - now).total_seconds() // 60)} min")
+        while datetime.now(tz) < nxt:
+            time.sleep(min(60, max(1, (nxt - datetime.now(tz)).total_seconds())))
+        now = datetime.now(tz)
+        rows = parse_rows(g.read_sheet(cfg["sheet_id"], cfg["sheet_tab"]))   # re-read: row may have been edited
 
+    print("\nSUMMARY " + json.dumps(summary, indent=2))
+
+
+def next_due(rows, tz, now):
+    """Earliest post_time in the future among queued rows, or None."""
+    best = None
+    for r in rows:
+        if r["status"] not in ("", "queued") or not r["post_time"] or not r["video"]:
+            continue
+        try:
+            t = parse_time(r["post_time"], tz)
+        except ValueError:
+            continue
+        if t > now and (best is None or t < best):
+            best = t
+    return best
+
+
+def handle_rows(g, meta, cfg, todo, dry_run):
     summary = []
     for row, why in todo:
         if why.startswith("bad-time"):
-            if not a.dry_run:
+            if not dry_run:
                 g.write_row_status(cfg["sheet_id"], cfg["sheet_tab"], row["_row"], "failed", note=why)
             summary.append({"row": row["_row"], "status": "failed", "errors": {"time": why}})
             continue
         if why == "late":
-            if not a.dry_run:
+            if not dry_run:
                 g.write_row_status(cfg["sheet_id"], cfg["sheet_tab"], row["_row"], "skipped-late",
                                    note=f"post_time more than {cfg['max_late_hours']}h ago; set status to 'queued' to force")
             summary.append({"row": row["_row"], "status": "skipped-late"})
             continue
-        if a.dry_run:
+        if dry_run:
             log(f"DRY RUN row {row['_row']}: would post '{row['video']}' to {sorted(wanted_platforms(row['platforms']))}")
             summary.append({"row": row["_row"], "status": "dry-run", "video": row["video"]})
             continue
@@ -546,8 +583,7 @@ def main():
             summary.append({"row": row["_row"], "status": "failed", "errors": {"config": "no Meta token"}})
             continue
         summary.append(process_row(g, meta, cfg, row))
-
-    print("\nSUMMARY " + json.dumps(summary, indent=2))
+    return summary
 
 
 if __name__ == "__main__":
