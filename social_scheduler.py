@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -176,6 +177,85 @@ class Google:
                 for chunk in r.iter_content(1 << 20):
                     f.write(chunk)
         return dest
+
+    def upload(self, path, name, folder_id):
+        meta = json.dumps({"name": name, "parents": [folder_id]})
+        with open(path, "rb") as f:
+            files = {"metadata": ("metadata", meta, "application/json; charset=UTF-8"),
+                     "file": (name, f, "video/mp4")}
+            r = requests.post("https://www.googleapis.com/upload/drive/v3/files",
+                              params={"uploadType": "multipart", "fields": "id,name,size"},
+                              headers=self.h(), files=files)
+        if r.status_code not in (200, 201):
+            raise RuntimeError(f"Drive upload failed: {r.text[:300]}")
+        return r.json()
+
+
+# ----------------------------------------------------------------- video prep
+def probe(path):
+    """Return (video_codec, width, height, fps, audio_codec) via ffprobe, or None if unavailable."""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                              "stream=codec_type,codec_name,width,height,r_frame_rate",
+                              "-of", "json", path], capture_output=True, text=True, check=True).stdout
+    except Exception:
+        return None
+    v, a = {}, {}
+    for s in json.loads(out).get("streams", []):
+        if s.get("codec_type") == "video" and not v:
+            v = s
+        elif s.get("codec_type") == "audio" and not a:
+            a = s
+    try:
+        num, den = v.get("r_frame_rate", "30/1").split("/")
+        fps = float(num) / float(den or 1)
+    except Exception:
+        fps = 30.0
+    return v.get("codec_name"), v.get("width"), v.get("height"), fps, a.get("codec_name")
+
+
+def needs_transcode(info):
+    if info is None:
+        return False
+    vcodec, w, h, fps, acodec = info
+    return vcodec != "h264" or (acodec not in (None, "aac")) or fps > 60.5
+
+
+def transcode(src, dst):
+    """Re-encode to the H.264/AAC MP4 that YouTube, Instagram and Facebook all accept."""
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", src,
+           "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-profile:v", "high", "-level", "4.1",
+           "-pix_fmt", "yuv420p", "-r", "30", "-movflags", "+faststart",
+           "-c:a", "aac", "-b:a", "160k", "-ar", "48000", dst]
+    subprocess.run(cmd, check=True)
+    return dst
+
+
+def ensure_compatible(g, cfg, f):
+    """Given a Drive file dict, return (file_id, local_path) of an H.264 version, creating and
+    uploading '<name>-h264.mp4' next to the original if needed (reused on later runs)."""
+    name = f["name"]
+    base = re.sub(r"\.mp4$", "", name, flags=re.I)
+    if base.endswith("-h264"):
+        return f["id"], None
+    q = f"name = '{base}-h264.mp4' and '{cfg['videos_folder_id']}' in parents and trashed = false"
+    r = requests.get(f"{DRIVE}/files", params={"q": q, "fields": "files(id,name)"}, headers=g.h())
+    existing = r.json().get("files", []) if r.status_code == 200 else []
+    if existing:
+        log(f"using existing converted copy {existing[0]['name']}")
+        return existing[0]["id"], None
+    src = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
+    g.download(f["id"], src)
+    info = probe(src)
+    if not needs_transcode(info):
+        return f["id"], src
+    log(f"video is {info[0]}/{info[4]} - converting to H.264/AAC for Meta compatibility")
+    dst = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
+    transcode(src, dst)
+    os.remove(src)
+    up = g.upload(dst, f"{base}-h264.mp4", cfg["videos_folder_id"])
+    log(f"uploaded converted copy {up['name']} ({int(up.get('size', 0)) / 1e6:.1f} MB)")
+    return up["id"], dst
 
 
 # ----------------------------------------------------------------- YouTube
@@ -352,8 +432,8 @@ def process_row(g, meta, cfg, row):
     tmp = None
     try:
         f = g.find_video(cfg["videos_folder_id"], row["video"])
-        fid = f["id"]
         log(f"row {n}: video {f['name']} ({int(f.get('size', 0)) / 1e6:.1f} MB) -> {sorted(platforms)}")
+        fid, tmp = ensure_compatible(g, cfg, f)   # H.264 copy for Meta; tmp = local file if already fetched
 
         if platforms & {"instagram", "facebook"}:
             perm_id = g.make_public(fid)
@@ -376,8 +456,9 @@ def process_row(g, meta, cfg, row):
 
         if "youtube" in platforms:
             try:
-                tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
-                g.download(fid, tmp)
+                if not tmp:
+                    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
+                    g.download(fid, tmp)
                 results["youtube"] = post_youtube(g, cfg, tmp, title, caption, tags)
                 log(f"row {n}: youtube ok {results['youtube']}")
             except Exception as e:
