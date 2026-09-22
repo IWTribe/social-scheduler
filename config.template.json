@@ -1,0 +1,25 @@
+{
+  "timezone": "Europe/Budapest",
+  "sheet_id": "1RLuJ2lyvqUJNJQFW70zW1Ars1_LcdbV6WJ9dvOeujjU",
+  "sheet_tab": null,
+  "videos_folder_id": "1sP4fXhrp3iQ_z3y11sqK5Wys4T-IKbQn",
+  "max_late_hours": 48,
+  "facebook_format": "reel",
+  "youtube": {
+    "privacy": "public",
+    "category_id": "22",
+    "default_tags": []
+  },
+  "google": {
+    "client_id": "filled by setup_google_auth.py",
+    "client_secret": "",
+    "refresh_token": "",
+    "api_key": ""
+  },
+  "meta": {
+    "page_id": "filled by setup_meta.py",
+    "page_access_token": "",
+    "ig_user_id": "",
+    "graph_version": "v23.0"
+  }
+}
