@@ -1,0 +1,45 @@
+name: Post due videos
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 minutes (GitHub may delay a few minutes)
+  workflow_dispatch:
+    inputs:
+      row:
+        description: "Post this sheet row now (leave empty to post everything due)"
+        required: false
+        default: ""
+
+concurrency:
+  group: social-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests
+      - name: Write config
+        run: printf '%s' "$CONFIG_JSON" > config.json
+        env:
+          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+      - name: Run scheduler
+        run: |
+          if [ -n "${{ github.event.inputs.row }}" ]; then
+            python3 social_scheduler.py --config config.json --row "${{ github.event.inputs.row }}"
+          else
+            python3 social_scheduler.py --config config.json
+          fi
+      - name: Keep repo active (scheduled workflows pause after 60 idle days)
+        if: always()
+        run: |
+          git config user.name "scheduler-bot"
+          git config user.email "scheduler-bot@users.noreply.github.com"
+          date -u +"%Y-%m-%d" > last_run.txt   # one commit per day at most
+          git add last_run.txt
+          git diff --cached --quiet || (git commit -m "heartbeat $(cat last_run.txt)" && git push) || true
